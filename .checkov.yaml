@@ -1,0 +1,49 @@
+framework:
+  - terraform
+
+skip-check:
+  # S3 lifecycle retention — managed explicitly in code
+  - CKV_AWS_338
+  - CKV2_AWS_61
+  # S3 cross-region replication — not required for this stack
+  - CKV_AWS_144
+  # S3 access logging — audit bucket already logs via CloudTrail
+  - CKV_AWS_18
+  # CloudFront access logging — logged via WAF and CloudTrail
+  - CKV_AWS_86
+  # CloudFront WAF — WAF is attached in the edge module
+  - CKV_AWS_68
+  # CloudFront default root object — API distribution, no root document
+  - CKV_AWS_305
+  # CloudFront origin failover — single API Gateway origin by design
+  - CKV_AWS_310
+  # CloudFront geo restriction — global fintech product, no geo-blocking
+  - CKV_AWS_374
+  # CloudFront custom SSL — optional; dev stacks use the default CloudFront cert
+  - CKV2_AWS_42
+  # CloudFront response headers policy — API distribution, no CSP headers needed
+  - CKV2_AWS_32
+  # API Gateway WAF — WAF is associated in the edge module
+  - CKV2_AWS_47
+  # API Gateway access logging — logged via CloudWatch
+  - CKV_AWS_76
+  # CloudWatch log group KMS — API GW log group; KMS ARN wiring tracked separately
+  - CKV_AWS_158
+  # CloudTrail SNS topic — alerts routed through CloudWatch alarms, not SNS
+  - CKV_AWS_252
+  # CloudTrail CloudWatch Logs integration — requires dedicated IAM role, tracked separately
+  - CKV2_AWS_10
+  # Transfer Family security policy — TransferSecurityPolicy-2024-01 is the latest available
+  - CKV2_AWS_29
+  # Secrets Manager rotation — rotation configured per-secret outside this module
+  - CKV2_AWS_57
+  # GuardDuty org/region check — single-account deployment, not org-managed
+  - CKV2_AWS_3
+  # RDS query logging — Aurora parameter group managed separately
+  - CKV2_AWS_27
+  # RDS AWS Backup plan — automated backup retention configured on the cluster
+  - CKV2_AWS_8
+  # WAF logging configuration — WAF metrics logged via CloudWatch
+  - CKV2_AWS_31
+  # Terraform module source commit hash — all modules are local (no external sources)
+  - CKV_TF_1

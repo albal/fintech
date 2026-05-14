@@ -13,6 +13,23 @@ terraform {
 }
 
 data "aws_partition" "current" {}
+data "aws_caller_identity" "current" {}
+
+data "aws_iam_policy_document" "kms_key_policy" {
+  #checkov:skip=CKV_AWS_356:KMS root-account grant requires kms:* on * — this is the standard AWS key policy pattern
+  #checkov:skip=CKV_AWS_109:KMS root-account grant requires kms:* on * — this is the standard AWS key policy pattern
+  #checkov:skip=CKV_AWS_111:KMS root-account grant requires kms:* on * — this is the standard AWS key policy pattern
+  statement {
+    sid     = "EnableIAMUserPermissions"
+    effect  = "Allow"
+    actions = ["kms:*"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:${data.aws_partition.current.partition}:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    resources = ["*"]
+  }
+}
 
 # Single CMK for all envelope encryption (RDS, S3, SQS, Secrets, CW Logs, EBS).
 # For stricter PCI scope separation, split into per-service keys.
@@ -20,6 +37,7 @@ resource "aws_kms_key" "main" {
   description             = "${var.name} master CMK"
   deletion_window_in_days = 30
   enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.kms_key_policy.json
   tags                    = var.tags
 }
 

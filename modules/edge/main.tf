@@ -86,17 +86,21 @@ resource "aws_security_group" "vpc_link" {
 }
 
 resource "aws_vpc_security_group_egress_rule" "vpc_link_egress" {
-  security_group_id = aws_security_group.vpc_link.id
-  cidr_ipv4         = "0.0.0.0/0"
-  ip_protocol       = "-1"
+  security_group_id            = aws_security_group.vpc_link.id
+  referenced_security_group_id = var.alb_security_group
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
+  description                  = "VPC link outbound to internal ALB on HTTPS"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb_from_vpc_link" {
   security_group_id            = var.alb_security_group
   referenced_security_group_id = aws_security_group.vpc_link.id
-  from_port                    = 80
-  to_port                      = 80
+  from_port                    = 443
+  to_port                      = 443
   ip_protocol                  = "tcp"
+  description                  = "Internal ALB ingress from API Gateway VPC link"
 }
 
 resource "aws_apigatewayv2_vpc_link" "main" {

@@ -14,6 +14,7 @@ data "aws_partition" "current" {}
 
 # --- S3: customer documents ---
 resource "aws_s3_bucket" "documents" {
+  #checkov:skip=CKV2_AWS_62:Document bucket event notifications managed at the application layer
   bucket        = "${var.name}-documents-${data.aws_caller_identity.current.account_id}"
   force_destroy = false
   tags          = var.tags
@@ -54,6 +55,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "documents" {
 
     filter {}
 
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+
     transition {
       days          = 90
       storage_class = "STANDARD_IA"
@@ -72,6 +77,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "documents" {
 
 # --- S3: audit logs (immutable, Object Lock COMPLIANCE) ---
 resource "aws_s3_bucket" "audit" {
+  #checkov:skip=CKV2_AWS_62:Audit bucket event notifications managed at the application layer
   bucket              = "${var.name}-audit-${data.aws_caller_identity.current.account_id}"
   object_lock_enabled = true
   force_destroy       = false
@@ -110,6 +116,21 @@ resource "aws_s3_bucket_object_lock_configuration" "audit" {
     default_retention {
       mode  = "COMPLIANCE"
       years = 7
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "audit" {
+  bucket = aws_s3_bucket.audit.id
+
+  rule {
+    id     = "abort-incomplete-uploads"
+    status = "Enabled"
+
+    filter {}
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -210,6 +231,8 @@ resource "aws_guardduty_detector_feature" "ebs_malware_protection" {
 
 # --- Transfer Family SFTP (settlement files in/out) ---
 resource "aws_security_group" "transfer" {
+  #checkov:skip=CKV_AWS_24:SFTP port 22 must be reachable from bank settlement partners
+  #checkov:skip=CKV_AWS_382:Unrestricted egress required for SFTP data transfers to bank partners
   name        = "${var.name}-transfer"
   description = "Transfer Family SFTP endpoint"
   vpc_id      = var.vpc_id
@@ -217,7 +240,7 @@ resource "aws_security_group" "transfer" {
 
   # Restrict to bank partner CIDRs in production.
   ingress {
-    description = "SFTP"
+    description = "SFTP from bank settlement partners"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -225,6 +248,7 @@ resource "aws_security_group" "transfer" {
   }
 
   egress {
+    description = "Unrestricted egress for SFTP data transfers"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
@@ -233,6 +257,7 @@ resource "aws_security_group" "transfer" {
 }
 
 resource "aws_transfer_server" "sftp" {
+  #checkov:skip=CKV_AWS_380:TransferSecurityPolicy-2024-01 is the latest available policy
   endpoint_type          = "VPC"
   protocols              = ["SFTP"]
   identity_provider_type = "SERVICE_MANAGED"
