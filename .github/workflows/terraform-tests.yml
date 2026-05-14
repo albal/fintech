@@ -1,0 +1,57 @@
+name: Terraform Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-tests.yml'
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/terraform-tests.yml'
+
+# Cancel earlier runs on the same branch/PR when a new commit arrives.
+concurrency:
+  group: terraform-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: fmt + validate + test
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: terraform
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.2
+          terraform_wrapper: false
+
+      - name: Cache providers and modules
+        uses: actions/cache@v4
+        with:
+          path: terraform/.terraform
+          key: ${{ runner.os }}-tf-${{ hashFiles('terraform/.terraform.lock.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-tf-
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (no backend — tests use mocks, no AWS creds needed)
+        run: terraform init -backend=false -input=false
+
+      - name: Validate
+        run: terraform validate -no-color
+
+      - name: Test
+        run: terraform test -no-color
