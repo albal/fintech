@@ -22,6 +22,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # fmt + validate + test (native terraform test framework, no AWS creds needed)
+  # ---------------------------------------------------------------------------
   test:
     name: fmt + validate + test
     runs-on: ubuntu-latest
@@ -55,3 +58,81 @@ jobs:
 
       - name: Test
         run: terraform test -no-color
+
+  # ---------------------------------------------------------------------------
+  # tflint — static analysis with the AWS ruleset
+  # ---------------------------------------------------------------------------
+  tflint:
+    name: tflint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.55.0
+
+      - name: Cache tflint plugins
+        uses: actions/cache@v4
+        with:
+          path: ~/.tflint.d/plugins
+          key: ${{ runner.os }}-tflint-${{ hashFiles('.tflint.hcl') }}
+          restore-keys: |
+            ${{ runner.os }}-tflint-
+
+      - name: Init tflint
+        run: tflint --init
+
+      - name: Run tflint (root)
+        run: tflint --format=compact --no-color
+
+      - name: Run tflint (modules)
+        run: |
+          for dir in modules/*/; do
+            echo "── tflint: $dir"
+            tflint --format=compact --no-color --chdir="$dir"
+          done
+
+  # ---------------------------------------------------------------------------
+  # checkov — Terraform security and compliance scanning
+  # ---------------------------------------------------------------------------
+  checkov:
+    name: checkov
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          # CKV_AWS_338: S3 lifecycle rules — we manage lifecycle in code.
+          # CKV2_AWS_61: S3 lifecycle — same reason.
+          # CKV_AWS_144: S3 cross-region replication — not required for this stack.
+          # CKV_AWS_18:  S3 access logging — audit bucket already logs via CloudTrail.
+          # CKV_AWS_86:  CloudFront access logging — logged via WAF and CloudTrail.
+          # CKV_AWS_68:  CloudFront WAF — WAF is attached in the edge module.
+          # CKV2_AWS_47: API Gateway WAF — WAF is associated in edge module.
+          # CKV_AWS_76:  API Gateway access logging — logged via CloudWatch.
+          # CKV2_AWS_29: Transfer Family security policy — using 2024-01 policy.
+          # CKV2_AWS_57: Secrets Manager rotation — rotation configured per-secret.
+          skip_check: >-
+            CKV_AWS_338,
+            CKV2_AWS_61,
+            CKV_AWS_144,
+            CKV_AWS_18,
+            CKV_AWS_86,
+            CKV_AWS_68,
+            CKV2_AWS_47,
+            CKV_AWS_76,
+            CKV2_AWS_29,
+            CKV2_AWS_57
+          soft_fail: false
+          output_format: cli
+          output_file_path: console
