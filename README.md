@@ -55,20 +55,32 @@ Data flow on a payment:
 
 ```
 terraform/
-├── versions.tf         provider + version pins
+├── versions.tf         provider + version pins (AWS 6.45.0, tls ~> 4.0)
 ├── providers.tf        aws + aws.us_east_1 (CloudFront WAF must live in us-east-1)
-├── variables.tf        root input variables
+├── variables.tf        root input variables (all validated)
 ├── locals.tf           name composition, AZ slicing, common tags
 ├── main.tf             wires the six child modules together
 ├── outputs.tf          top-level outputs (ALB DNS, CF domain, etc.)
+├── .checkov.yaml       single source of truth for all checkov skips
+├── .tflint.hcl         tflint config with AWS ruleset
+├── scripts/
+│   └── test-local.sh   mirrors the full CI pipeline locally
 ├── tests/
-│   ├── plan.tftest.hcl    8 plan-time tests
-│   └── apply.tftest.hcl   4 apply-time tests against mocked AWS
+│   ├── plan.tftest.hcl         8 plan-time tests (naming, AZ scaling, domain options)
+│   ├── apply.tftest.hcl        4 apply-time tests (full graph against mocks)
+│   ├── validation.tftest.hcl   11 negative tests (every variable's validation rules)
+│   ├── wiring.tftest.hcl       2 cross-module dependency-chain tests
+│   ├── network.tftest.hcl      3 module isolation tests
+│   ├── security.tftest.hcl     2 module isolation tests
+│   ├── data.tftest.hcl         2 module isolation tests
+│   ├── compute.tftest.hcl      2 module isolation tests
+│   ├── edge.tftest.hcl         2 module isolation tests
+│   └── observability.tftest.hcl 2 module isolation tests
 └── modules/
     ├── network/        VPC (community module) + 2 gateway + 7 interface endpoints
-    ├── security/       KMS CMK + IAM roles + Secrets Manager secrets
+    ├── security/       KMS CMK (with key policy) + IAM roles + Secrets Manager secrets
     ├── data/           Aurora · Redis · DynamoDB · SQS · DLQ
-    ├── compute/        Internal ALB · ECS Fargate · 2 Lambda fns · SG mesh
+    ├── compute/        Internal ALB (HTTPS/443) · ECS Fargate · 2 Lambda fns · SG mesh
     ├── edge/           CloudFront · WAF · HTTP API · VPC link · Cognito · R53
     └── observability/  S3 (docs + audit) · CloudTrail · GuardDuty · SFTP
 ```
@@ -84,10 +96,12 @@ everything else is raw resources for 1:1 mapping to the diagram.
 | Requirement      | Version       | Notes                                          |
 | ---------------- | ------------- | ---------------------------------------------- |
 | Terraform        | `>= 1.6`      | 1.6 added native tests; 1.7+ adds mock_provider |
-| AWS provider     | `~> 5.50`     | Pinned in `versions.tf`                        |
+| AWS provider     | `6.45.0`      | Exact pin in `versions.tf`                     |
 | AWS credentials  | —             | `aws configure` or env vars, region us-east-1  |
 | AWS account      | —             | Service quotas for VPC, ECS, RDS, EIPs         |
 | Permissions      | Admin-ish     | This module creates IAM, KMS, VPC, RDS, etc.   |
+| tflint           | `>= 0.55`     | Static analysis (CI + local); `brew install tflint` |
+| checkov          | `>= 3.2`      | Policy scanning (CI + local); `pip install checkov` |
 
 ---
 
@@ -162,37 +176,37 @@ hosted_zone_id = "Z01234567890ABCDEFGHI"
 
 ## Testing
 
-Tests run entirely against mocked AWS — no credentials, no cost, ~10 seconds:
+The full suite — format check, validation, Terraform tests, tflint, and checkov — runs with one command:
 
 ```bash
-terraform test
+bash scripts/test-local.sh
 ```
 
-```
-tests/
-├── plan.tftest.hcl     8 plan-time tests (naming, AZ scaling, domain options)
-└── apply.tftest.hcl    4 apply-time tests (full graph against mocks)
-```
-
-What native tests cover:
-- Naming cascades correctly across modules when `name` / `environment` change
-- AZ count scales subnet creation
-- Optional `domain_name` / `hosted_zone_id` paths plan + apply cleanly
-- Full dependency graph evaluates without errors
-
-What they **don't** cover well — **add a static analyzer for these:**
-- Compliance assertions like "every S3 bucket has public access blocked"
-- Open security group rules, hardcoded secrets, etc.
-
-Recommended layer:
+This mirrors the CI pipeline exactly. Individual tools can be run in isolation:
 
 ```bash
-checkov -d . --framework terraform
-# or
-tfsec .
-# or, in CI
-trivy config .
+terraform test -no-color                                         # 38 tests, ~10 seconds, no AWS creds
+tflint --format=default --no-color                               # root module
+tflint --format=default --no-color --chdir=modules/<name>        # single module
+checkov --directory . --config-file .checkov.yaml --compact --quiet
 ```
+
+**38 tests across 10 files** — all run against mocked AWS, no real credentials needed:
+
+| File | Tests | What it covers |
+|---|---|---|
+| `plan.tftest.hcl` | 8 | Naming, AZ scaling, tag correctness, domain option combinations |
+| `apply.tftest.hcl` | 4 | Full dependency graph, computed ARN shapes, name/env propagation |
+| `validation.tftest.hcl` | 11 | Negative tests — every variable's `validation` block rejects bad input |
+| `wiring.tftest.hcl` | 2 | Cross-module outputs: every inter-module dependency is non-empty |
+| `network.tftest.hcl` | 3 | VPC outputs present at az_count = 1, 2, and 4 |
+| `security.tftest.hcl` | 2 | KMS ARN format, ARN stable across name changes |
+| `data.tftest.hcl` | 2 | DynamoDB naming convention, SQS + DLQ exposed |
+| `compute.tftest.hcl` | 2 | ALB DNS name present, survives name/env changes |
+| `edge.tftest.hcl` | 2 | Cognito domain format, custom domain path |
+| `observability.tftest.hcl` | 2 | S3 bucket outputs present, survive name changes |
+
+See [`TESTS.md`](TESTS.md) for a detailed description of every test case and the rationale behind each checkov skip.
 
 ---
 
@@ -225,8 +239,8 @@ az_count = 1
 
 Items the code does today:
 
-- [x] KMS CMK with rotation, used by every service that supports it
-- [x] All S3 buckets: versioned, encrypted, public access blocked
+- [x] KMS CMK with rotation, explicit key policy, used by every service that supports it
+- [x] All S3 buckets: versioned, encrypted, public access blocked, lifecycle abort-incomplete-multipart
 - [x] Audit bucket: Object Lock COMPLIANCE, 7-year retention
 - [x] Aurora: encrypted, deletion protection, `rds.force_ssl = 1`, multi-AZ, IAM auth on
 - [x] Redis: at-rest + in-transit encryption, AUTH token, multi-AZ failover
@@ -235,11 +249,14 @@ Items the code does today:
 - [x] CloudFront: WAF with managed rule groups + per-IP rate limit
 - [x] API Gateway: JWT authorizer via Cognito, structured access logs
 - [x] ECS: Container Insights, `readonlyRootFilesystem`, ECS Exec via KMS
-- [x] Lambda: in-VPC, KMS, X-Ray, DLQ-aware event source mapping
+- [x] Lambda: in-VPC, KMS, X-Ray, DLQ-aware event source mapping, reserved concurrency
 - [x] CloudTrail: multi-region, log-file validation, KMS, S3 + Lambda data events
 - [x] GuardDuty: enabled with S3 + malware protection
 - [x] VPC: private subnets, NAT per AZ, flow logs to CloudWatch
-- [x] VPC endpoints: S3 + DynamoDB (gateway), Secrets/KMS/ECR/Logs/SQS/STS (interface)
+- [x] VPC endpoints: S3 + DynamoDB (gateway), Secrets/KMS/ECR/Logs/SQS/STS (interface), restricted egress SGs
+- [x] Internal ALB: HTTPS/443 listener, TLS 1.3 SSL policy, access logs to S3
+- [x] All security group rules have descriptions
+- [x] Variable validation on all root inputs; CI gates on fmt + validate + 38 tests + tflint + checkov
 
 Things you'll still want to do before going live:
 
@@ -247,14 +264,14 @@ Things you'll still want to do before going live:
 - [ ] Replace the placeholder Lambda zip with actual handler code
 - [ ] Populate `<name>/payment-provider/api-key` in Secrets Manager
 - [ ] Configure Secrets Manager rotation for the Aurora master credential
-- [ ] Terminate TLS at the internal ALB (currently HTTP since API GW terminates)
+- [ ] Replace the self-signed ACM cert on the internal ALB with a private CA cert
 - [ ] Restrict Transfer Family SFTP ingress to bank partner CIDRs (currently 0.0.0.0/0)
 - [ ] Split the single CMK into per-service keys if you need strict PCI scope separation
 - [ ] Set up CloudWatch alarms: DLQ depth > 0, Aurora CPU, ALB 5xx rate, WAF blocks
 - [ ] Add Backup vault + AWS Backup plan for Aurora and DynamoDB
 - [ ] Configure CloudFront logging to the audit bucket
 - [ ] Add a remote state backend (S3 + DynamoDB lock table) — see below
-- [ ] Run `checkov` / `tfsec` in CI and gate merges on it
+- [ ] Wire KMS key ARN to the API Gateway CloudWatch log group
 - [ ] Subscribe GuardDuty findings to Security Hub or a SIEM
 
 ---
@@ -339,7 +356,7 @@ terraform destroy
 | `Error: creating IAM Role: EntityAlreadyExists`                  | A previous failed apply left an orphan IAM role. `terraform import` it or delete in console.      |
 | Aurora apply hangs at "still creating"                           | First-time Aurora creation can take 10–15 min. Normal.                                            |
 | `Error: error reading Secrets Manager Secret Version`            | Race condition on first apply — re-run `terraform apply`.                                         |
-| `terraform test` fails with "invalid JSON policy"                | You're not using the mocks in `tests/`. Run from the `terraform/` dir, not `tests/`.              |
+| `terraform test` fails with "invalid JSON policy"                | IAM policy document mock is missing. Run from the `terraform/` dir; all mocks are in `tests/`.    |
 | `Error: ... DBClusterAlreadyExistsFault`                         | Final-snapshot name collision after a previous destroy. Bump `final_snapshot_identifier`.         |
 | Lambda timing out connecting to RDS                              | Cold start + VPC ENI attachment. Lambda is already at `reserved_concurrent_executions = 100`.     |
 | `terraform destroy` fails on S3 buckets                          | Versioned objects + Object Lock prevent deletion. See "Destroying" above.                         |
@@ -351,16 +368,29 @@ terraform destroy
 ```
 terraform/
 ├── .gitignore
+├── .checkov.yaml                     checkov skip list (shared by CI and local script)
+├── .tflint.hcl                       tflint config + AWS ruleset plugin
 ├── README.md                         ← you are here
+├── TESTS.md                          test descriptions + checkov skip rationale
 ├── versions.tf
 ├── providers.tf
 ├── variables.tf
 ├── locals.tf
 ├── main.tf
 ├── outputs.tf
+├── scripts/
+│   └── test-local.sh                 local CI mirror (fmt · validate · test · tflint · checkov)
 ├── tests/
 │   ├── plan.tftest.hcl
-│   └── apply.tftest.hcl
+│   ├── apply.tftest.hcl
+│   ├── validation.tftest.hcl
+│   ├── wiring.tftest.hcl
+│   ├── network.tftest.hcl
+│   ├── security.tftest.hcl
+│   ├── data.tftest.hcl
+│   ├── compute.tftest.hcl
+│   ├── edge.tftest.hcl
+│   └── observability.tftest.hcl
 └── modules/
     ├── network/
     │   ├── main.tf                   VPC + endpoints
@@ -375,7 +405,7 @@ terraform/
     │   ├── variables.tf
     │   └── outputs.tf
     ├── compute/
-    │   ├── main.tf                   ALB · ECS · Lambda · SG mesh
+    │   ├── main.tf                   ALB (HTTPS) · ECS · Lambda · SG mesh
     │   ├── variables.tf
     │   └── outputs.tf
     ├── edge/
