@@ -9,6 +9,10 @@ terraform {
       source  = "hashicorp/archive"
       version = ">= 2.0"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = ">= 4.0"
+    }
   }
 }
 
@@ -40,12 +44,14 @@ resource "aws_vpc_security_group_egress_rule" "lambda_all" {
   security_group_id = aws_security_group.lambda.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
+  description       = "All outbound traffic from Lambda functions"
 }
 
 resource "aws_vpc_security_group_egress_rule" "ecs_all" {
   security_group_id = aws_security_group.ecs.id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
+  description       = "All outbound traffic from ECS tasks"
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_ecs" {
@@ -54,6 +60,7 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_ecs" {
   from_port                    = 8080
   to_port                      = 8080
   ip_protocol                  = "tcp"
+  description                  = "ALB to ECS containers on port 8080"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb" {
@@ -62,6 +69,7 @@ resource "aws_vpc_security_group_ingress_rule" "ecs_from_alb" {
   from_port                    = 8080
   to_port                      = 8080
   ip_protocol                  = "tcp"
+  description                  = "ECS containers ingress from ALB on port 8080"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "aurora_from_ecs" {
@@ -70,6 +78,7 @@ resource "aws_vpc_security_group_ingress_rule" "aurora_from_ecs" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
+  description                  = "PostgreSQL ingress from ECS tasks"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "aurora_from_lambda" {
@@ -78,6 +87,7 @@ resource "aws_vpc_security_group_ingress_rule" "aurora_from_lambda" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
+  description                  = "PostgreSQL ingress from Lambda functions"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "redis_from_ecs" {
@@ -86,6 +96,7 @@ resource "aws_vpc_security_group_ingress_rule" "redis_from_ecs" {
   from_port                    = 6379
   to_port                      = 6379
   ip_protocol                  = "tcp"
+  description                  = "Redis ingress from ECS tasks"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "redis_from_lambda" {
@@ -94,6 +105,123 @@ resource "aws_vpc_security_group_ingress_rule" "redis_from_lambda" {
   from_port                    = 6379
   to_port                      = 6379
   ip_protocol                  = "tcp"
+  description                  = "Redis ingress from Lambda functions"
+}
+
+# --- ALB access-log bucket ---
+# ALB access logs require SSE-S3 (AES256); the ELB service cannot write to a
+# bucket protected by a CMK. The inline skip below acknowledges this constraint.
+resource "aws_s3_bucket" "alb_logs" {
+  #checkov:skip=CKV2_AWS_62:ALB log buckets do not require S3 event notifications
+  #checkov:skip=CKV_AWS_145:ALB access logs cannot be written to a CMK-encrypted bucket (AWS limitation)
+  bucket        = "${var.name}-alb-logs"
+  force_destroy = true
+  tags          = var.tags
+}
+
+resource "aws_s3_bucket_public_access_block" "alb_logs" {
+  bucket                  = aws_s3_bucket.alb_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "alb_logs" {
+  #checkov:skip=CKV2_AWS_67:ALB access logs cannot be written to a CMK-encrypted bucket (AWS limitation)
+  #checkov:skip=CKV_AWS_145:ALB access logs cannot be written to a CMK-encrypted bucket (AWS limitation)
+  bucket = aws_s3_bucket.alb_logs.id
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
+  bucket = aws_s3_bucket.alb_logs.id
+  rule {
+    id     = "expire-logs"
+    status = "Enabled"
+    filter {}
+    expiration { days = 90 }
+    noncurrent_version_expiration { noncurrent_days = 30 }
+    abort_incomplete_multipart_upload { days_after_initiation = 7 }
+  }
+}
+
+data "aws_iam_policy_document" "alb_logs" {
+  statement {
+    sid    = "AWSLogDeliveryWrite"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.alb_logs.arn}/AWSLogs/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "s3:x-amz-acl"
+      values   = ["bucket-owner-full-control"]
+    }
+  }
+  statement {
+    sid    = "AWSLogDeliveryAclCheck"
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["delivery.logs.amazonaws.com"]
+    }
+    actions   = ["s3:GetBucketAcl"]
+    resources = [aws_s3_bucket.alb_logs.arn]
+  }
+}
+
+resource "aws_s3_bucket_policy" "alb_logs" {
+  bucket     = aws_s3_bucket.alb_logs.id
+  policy     = data.aws_iam_policy_document.alb_logs.json
+  depends_on = [aws_s3_bucket_public_access_block.alb_logs]
+}
+
+# --- Self-signed certificate for the internal ALB (TLS terminates at ALB) ---
+resource "tls_private_key" "alb" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "alb" {
+  private_key_pem = tls_private_key.alb.private_key_pem
+
+  subject {
+    common_name  = "${var.name}.internal"
+    organization = "Internal"
+  }
+
+  validity_period_hours = 8760
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
+resource "aws_acm_certificate" "alb_internal" {
+  private_key      = tls_private_key.alb.private_key_pem
+  certificate_body = tls_self_signed_cert.alb.cert_pem
+  tags             = var.tags
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # --- Internal ALB ---
@@ -105,7 +233,14 @@ resource "aws_lb" "main" {
   subnets                    = var.private_subnet_ids
   drop_invalid_header_fields = true
   enable_deletion_protection = true
-  tags                       = var.tags
+
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.id
+    enabled = true
+  }
+
+  depends_on = [aws_s3_bucket_policy.alb_logs]
+  tags       = var.tags
 }
 
 resource "aws_lb_target_group" "ecs" {
@@ -128,12 +263,12 @@ resource "aws_lb_target_group" "ecs" {
   tags                 = var.tags
 }
 
-# HTTP because TLS terminates at API GW. For end-to-end TLS, attach an ACM cert
-# (or an internal PCA cert) and switch to HTTPS on 443.
 resource "aws_lb_listener" "main" {
   load_balancer_arn = aws_lb.main.arn
-  port              = 80
-  protocol          = "HTTP"
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate.alb_internal.arn
 
   default_action {
     type             = "forward"
@@ -150,6 +285,7 @@ resource "aws_cloudwatch_log_group" "ecs" {
 }
 
 resource "aws_ecs_cluster" "main" {
+  #checkov:skip=CKV_AWS_224:kms_key_id is set on execute_command_configuration; checkov does not resolve variable inputs at static-analysis time
   name = "${var.name}-cluster"
 
   setting {
@@ -305,6 +441,8 @@ resource "aws_cloudwatch_log_group" "fraud_kyc" {
 }
 
 resource "aws_lambda_function" "payment_svc" {
+  #checkov:skip=CKV_AWS_272:Code signing config is an org-level setup applied outside this module
+  #checkov:skip=CKV_AWS_116:SQS-triggered Lambda; failed messages are handled by the payments SQS DLQ
   function_name                  = "${var.name}-payment-svc"
   role                           = var.lambda_role_arn
   filename                       = data.archive_file.lambda_placeholder.output_path
@@ -339,15 +477,19 @@ resource "aws_lambda_function" "payment_svc" {
 }
 
 resource "aws_lambda_function" "fraud_kyc" {
-  function_name    = "${var.name}-fraud-kyc"
-  role             = var.lambda_role_arn
-  filename         = data.archive_file.lambda_placeholder.output_path
-  source_code_hash = data.archive_file.lambda_placeholder.output_base64sha256
-  runtime          = "nodejs20.x"
-  handler          = "index.handler"
-  timeout          = 60
-  memory_size      = 1024
-  kms_key_arn      = var.kms_key_arn
+  #checkov:skip=CKV_AWS_272:Code signing config is an org-level setup applied outside this module
+  #checkov:skip=CKV_AWS_116:Synchronously invoked by payment_svc; async DLQ not applicable
+  #checkov:skip=CKV_AWS_173:No environment variables defined; kms_key_arn is set for function-level encryption
+  function_name                  = "${var.name}-fraud-kyc"
+  role                           = var.lambda_role_arn
+  filename                       = data.archive_file.lambda_placeholder.output_path
+  source_code_hash               = data.archive_file.lambda_placeholder.output_base64sha256
+  runtime                        = "nodejs20.x"
+  handler                        = "index.handler"
+  timeout                        = 60
+  memory_size                    = 1024
+  kms_key_arn                    = var.kms_key_arn
+  reserved_concurrent_executions = 50
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
