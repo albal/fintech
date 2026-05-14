@@ -31,16 +31,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.15.2
           terraform_wrapper: false
 
       - name: Cache providers and modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .terraform
           key: ${{ runner.os }}-tf-${{ hashFiles('.terraform.lock.hcl') }}
@@ -68,15 +68,15 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup tflint
-        uses: terraform-linters/setup-tflint@v4
+        uses: terraform-linters/setup-tflint@v6
         with:
           tflint_version: v0.55.0
 
       - name: Cache tflint plugins
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.tflint.d/plugins
           key: ${{ runner.os }}-tflint-${{ hashFiles('.tflint.hcl') }}
@@ -87,13 +87,13 @@ jobs:
         run: tflint --init
 
       - name: Run tflint (root)
-        run: tflint --format=compact --no-color
+        run: tflint --format=default --no-color
 
       - name: Run tflint (modules)
         run: |
           for dir in modules/*/; do
             echo "── tflint: $dir"
-            tflint --format=compact --no-color --chdir="$dir"
+            tflint --format=default --no-color --chdir="$dir"
           done
 
   # ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run checkov
         uses: bridgecrewio/checkov-action@v12

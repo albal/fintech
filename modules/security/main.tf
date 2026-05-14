@@ -1,6 +1,18 @@
-data "aws_caller_identity" "current" {}
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
+  }
+}
+
 data "aws_partition" "current" {}
-data "aws_region" "current" {}
 
 # Single CMK for all envelope encryption (RDS, S3, SQS, Secrets, CW Logs, EBS).
 # For stricter PCI scope separation, split into per-service keys.

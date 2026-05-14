@@ -19,7 +19,6 @@ module "data" {
 
   name                     = local.name
   vpc_id                   = module.network.vpc_id
-  vpc_cidr                 = module.network.vpc_cidr
   database_subnet_ids      = module.network.database_subnet_ids
   private_subnet_ids       = module.network.private_subnet_ids
   kms_key_arn              = module.security.kms_key_arn
@@ -33,7 +32,6 @@ module "compute" {
 
   name                  = local.name
   vpc_id                = module.network.vpc_id
-  vpc_cidr              = module.network.vpc_cidr
   private_subnet_ids    = module.network.private_subnet_ids
   kms_key_arn           = module.security.kms_key_arn
   task_execution_role   = module.security.ecs_task_execution_role_arn

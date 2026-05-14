@@ -1,3 +1,17 @@
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = ">= 3.0"
+    }
+  }
+}
+
 data "aws_secretsmanager_secret_version" "db_master" {
   secret_id  = var.db_master_secret_arn
   version_id = var.db_master_secret_version

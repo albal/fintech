@@ -1,5 +1,18 @@
+terraform {
+  required_version = ">= 1.6"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 6.0"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = ">= 2.0"
+    }
+  }
+}
+
 data "aws_region" "current" {}
-data "aws_caller_identity" "current" {}
 
 # --- Security groups ---
 resource "aws_security_group" "alb" {
