@@ -190,7 +190,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "REDIS_HOST", value = var.redis_endpoint },
       { name = "LEDGER_TABLE", value = var.ledger_table_name },
       { name = "PAYMENTS_QUEUE", value = var.payments_queue_url },
-      { name = "AWS_REGION", value = data.aws_region.current.name },
+      { name = "AWS_REGION", value = data.aws_region.current.region },
     ]
     secrets = [
       { name = "DB_CREDENTIALS", valueFrom = var.db_secret_arn },
@@ -199,7 +199,7 @@ resource "aws_ecs_task_definition" "app" {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.ecs.name
-        awslogs-region        = data.aws_region.current.name
+        awslogs-region        = data.aws_region.current.region
         awslogs-stream-prefix = "app"
       }
     }
