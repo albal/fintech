@@ -5,11 +5,15 @@ on:
   push:
     branches: ['**']
     paths:
-      - 'terraform/**'
+      - '**.tf'
+      - '**.tftest.hcl'
+      - '.terraform.lock.hcl'
       - '.github/workflows/terraform-tests.yml'
   pull_request:
     paths:
-      - 'terraform/**'
+      - '**.tf'
+      - '**.tftest.hcl'
+      - '.terraform.lock.hcl'
       - '.github/workflows/terraform-tests.yml'
 
 # Cancel earlier runs on the same branch/PR when a new commit arrives.
@@ -21,10 +25,6 @@ jobs:
   test:
     name: fmt + validate + test
     runs-on: ubuntu-latest
-
-    defaults:
-      run:
-        working-directory: terraform
 
     steps:
       - name: Checkout
@@ -39,8 +39,8 @@ jobs:
       - name: Cache providers and modules
         uses: actions/cache@v4
         with:
-          path: terraform/.terraform
-          key: ${{ runner.os }}-tf-${{ hashFiles('terraform/.terraform.lock.hcl') }}
+          path: .terraform
+          key: ${{ runner.os }}-tf-${{ hashFiles('.terraform.lock.hcl') }}
           restore-keys: |
             ${{ runner.os }}-tf-
 
